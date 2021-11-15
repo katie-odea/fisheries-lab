@@ -1,0 +1,160 @@
+---
+title: "SST and Fishing Gear"
+author: "Katie O'Dea"
+date: "10/25/2021"
+output: html_document
+---
+STEP 1
+# load required packages
+
+  # install packages - only need to do this once in the Console
+    # install.packages("ncdf4")      ## for reading netCDF files
+    # install.packages("rgdal")      ## for r
+    # install.packages("sp")    ## for creation of geospatial objects
+    # install.packages("sf")
+    # install.packages("raster")     ## raster creation and extraction
+    # install.packages("maptools")   ## geospatial manipulation
+    # install.packages("rgeos")      ## geospatial manipulation
+    
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(ncdf4)
+library(rgdal)
+library(sp)
+library(sf)
+library(raster)
+library(maptools)
+library(rgeos)
+
+```
+
+#STEP 2
+#Pulling out the dimensions of the data
+```{r import data}
+# importing the gear data from SAU
+raw_gear_data <- read_csv("data/SAU EEZ 958,959,851,852,848,850 v48-0.csv")
+
+# opening the nc file	from NOAA
+raw_sst_data <- nc_open("data/sst.mnmean.nc")
+#checking attributes
+print(raw_sst_data) # 2 variables, excluding dimension variables. 
+    # Monthly Mean of Sea Surface Temp in degrees Celsius
+    # Missing data is flagged with a value of 32767s
+    # 4 dimensions are longitude (units are degrees east; size 360), latitude (units are degrees north; size 180), time (units are days since 1800-1-1; size 478), and nbnds (unclear what this is?).
+    # time: since observations are monthly means from 1981/12 to 2021/09, it makes sense there are 478 observations (although may be missing a few observations somewhere)
+    # 10 global attributes - not sure what these mean
+
+```
+
+#extracting variables 
+```{r extract variables}
+lon <- ncvar_get(raw_sst_data,"lon")
+nlon <- dim(lon) # 360
+head(lon) #0.5 1.5 2.5 3.5 4.5 5.5
+    
+lat <- ncvar_get(raw_sst_data,"lat")
+nlat <- dim(lat) # 180
+head(lat) #89.5 88.5 87.5 86.5 85.5 84.5
+
+print(c(nlon,nlat)) #360 180
+
+time <- ncvar_get(raw_sst_data,"time")
+head(time) #66443 66474 66505 66533 66564 66594 66625 66655 66686
+
+tunits <- ncatt_get(raw_sst_data,"time","units")
+    nt <- dim(time)
+    nt #478
+
+lonlat <- as.matrix(expand.grid(lon,lat)) # making a grid and then creating a matrix
+    dim(lonlat) # 1129600 obs and 2 vars? (I think?)
+    str(lonlat)
+    
+# get temperature
+    sst_array <- ncvar_get(raw_sst_data,"sst")
+    sstlongname <- ncatt_get(raw_sst_data,"sst","long_name")#Monthly Mean of Sea Surface Temperature 
+    sstunits <- ncatt_get(raw_sst_data,"sst","units") #degrees Celsius
+    dim(sst_array) # 360 180 478
+# replace netCDF fill values with NA's
+    sst_array[sst_array==32767] <- NA
+    
+# close netcdf data - I have extracted everything that I need
+    nc_close(raw_sst_data)
+  
+# delete the associate R data frame to save space
+    rm(raw_sst_data)
+    
+```
+
+# STEP 3
+# make the grid points from the data into a spatial dataframe
+```{r make grid points into spatial dataframe}
+
+# making a grid_id variable 
+    gridsize <-nlat*nlon
+    grid_id <- c(1:gridsize) 
+    head(grid_id)
+    str(grid_id)
+
+# binding the lonlat grid and grid_ids 
+    era1_grid_points<-cbind(lonlat,grid_id) 
+  
+# giving column names
+    colnames(era1_grid_points) <-c("longitude", "latitude", "grid_id")  
+    str(era1_grid_points)
+    head(era1_grid_points) # Looks good 
+  
+# making the matrix into a dataframe
+    era1_grid_pointsdf <- as.data.frame(era1_grid_points) 
+  
+# convert era1_grid_pointsdf into a sp object
+   coordinates(era1_grid_pointsdf) <- ~longitude + latitude # longitude first
+  
+# inspecting it
+   str(era1_grid_pointsdf) # data component is labeled grid_id, looks good
+  
+# add a coordinate reference system (CRS).
+   proj4string(era1_grid_pointsdf) <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +units=km")
+  
+# inspecting it
+    str(era1_grid_pointsdf) 
+#need shape files for EEZ
+```
+
+# STEP 4
+# convert sea surface temperature from netcdf format to SpatialPointsDataFrame format
+```{r convert sst}
+# check dimensions of temperature 
+    dim(sst_array) # 360 by 180 by 478
+    
+# track the number of time steps - subset of data (don't think I actually need to do this)
+
+# make sst array into vector
+    tmp_vec <- as.vector(sst_array)  
+    length(tmp_vec) # 360*180*478 = 30974400
+    
+# delete sst_array to save space
+    rm(sst_array)
+
+# reshape vector into a 180*360=64800 by 478 matrix using the matrix() function, verify dimensions & inspect
+    sst.mat <- matrix(tmp_vec,  nrow = nlon * nlat, ncol = nt) 
+    dim(sst.mat) #  64800 478
+    head(sst.mat[,1:20]) # a grid of temperature values (is this correct?)
+
+# label columns of matrix 
+    colnames(sst.mat) <- colnames(sst.mat, do.NULL = FALSE, prefix = "tmp")
+
+# add grid_id column to tmp.mat 
+    head(grid_id)
+    sst.mat <- cbind(grid_id,sst.mat) 
+    head(sst.mat[,1:20])
+
+# merge tmp.mat with grid points to make a spatial data frame 
+    sstGridPtsdf <- merge(era1_grid_pointsdf, sst.mat, by.x = "grid_id", by.y = "grid_id")  
+    str(sstGridPtsdf) # TBD obs. of  1461 variables 
+    
+#check points by checking grid points and degrees 
+    
+```
+
